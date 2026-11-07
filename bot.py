@@ -28,7 +28,7 @@ PRIVATE_CHANNEL_ID = int(PRIVATE_CHANNEL_ID) if PRIVATE_CHANNEL_ID else None
 PUBLIC_CHANNEL = "@ujaskinotarjima"
 POST_CHANNEL = "@ujaskinotarjima"
 
-PRIVATE_CHANNEL_LINK = "https://t.me/+BxjlOl6qHgYzNjQy"
+PRIVATE_CHANNEL_LINK = "https://t.me/+c-Yeom9Txeo4YTdi"
 
 if not BOT_TOKEN or not ADMIN_ID:
     raise RuntimeError("BOT_TOKEN va ADMIN_ID sozlanmagan!")
