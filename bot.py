@@ -17,12 +17,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from dotenv import load_dotenv
 
-# =========================
-# SETTINGS
-# =========================
-
 load_dotenv()
 
+# SETTINGS
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
@@ -31,6 +28,8 @@ PRIVATE_CHANNEL_ID = int(PRIVATE_CHANNEL_ID) if PRIVATE_CHANNEL_ID else None
 
 PUBLIC_CHANNEL = "@ujaskinotarjima"
 POST_CHANNEL = "@ujaskinotarjima"
+
+PRIVATE_CHANNEL_LINK = "https://t.me/+BxjlOl6qHgYzNjQy"
 
 if not BOT_TOKEN or not ADMIN_ID:
     raise RuntimeError("BOT_TOKEN va ADMIN_ID sozlanmagan!")
@@ -42,10 +41,7 @@ bot = Bot(
 
 dp = Dispatcher()
 
-# =========================
 # DATABASE
-# =========================
-
 db = sqlite3.connect("movies.db")
 
 db.execute("""
@@ -83,10 +79,7 @@ def delete_movie(code):
     return cursor.rowcount > 0
 
 
-# =========================
 # SUBSCRIPTION
-# =========================
-
 async def check_subscription(user_id):
     channels = []
 
@@ -121,7 +114,7 @@ def subscription_keyboard():
         buttons.append([
             InlineKeyboardButton(
                 text="1-kanalga obuna bo‘lish",
-                url="https://t.me/+HKP31UIW3Dk4Y2Fi"
+                url=PRIVATE_CHANNEL_LINK
             )
         ])
 
@@ -147,17 +140,14 @@ async def require_subscription(message, user_id):
         return True
 
     await message.answer(
-        "🎬 Kinolarni ko‘rish uchun kanallarga obuna bo‘ling!\n\n"
+        "🎬 Kinolarni ko‘rish uchun ikkala kanalga ham obuna bo‘ling!\n\n"
         "Obuna bo‘lgach, tekshirish tugmasini bosing.",
         reply_markup=subscription_keyboard()
     )
     return False
 
 
-# =========================
 # ADMIN PANEL
-# =========================
-
 def is_admin(user_id):
     return user_id == ADMIN_ID
 
@@ -190,10 +180,7 @@ async def admin_panel(message: Message):
     )
 
 
-# =========================
 # FSM
-# =========================
-
 class AddMovie(StatesGroup):
     video = State()
     title = State()
@@ -312,10 +299,7 @@ async def get_movie_code(message: Message, state: FSMContext):
     await state.clear()
 
 
-# =========================
 # DELETE MOVIE
-# =========================
-
 @dp.callback_query(F.data == "delete_movie")
 async def delete_movie_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -339,10 +323,7 @@ async def delete_movie_finish(message: Message, state: FSMContext):
     await state.clear()
 
 
-# =========================
 # STATISTICS
-# =========================
-
 @dp.callback_query(F.data == "movie_stats")
 async def movie_stats(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -359,10 +340,7 @@ async def movie_stats(callback: CallbackQuery):
     await callback.answer()
 
 
-# =========================
 # SEND MOVIE
-# =========================
-
 async def send_movie(target, code):
     movie = get_movie(code)
 
@@ -384,10 +362,7 @@ async def send_movie(target, code):
     )
 
 
-# =========================
 # START
-# =========================
-
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
@@ -410,10 +385,7 @@ async def start(message: Message, state: FSMContext):
     )
 
 
-# =========================
 # CHECK SUBSCRIPTION
-# =========================
-
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_callback(callback: CallbackQuery):
     if await check_subscription(callback.from_user.id):
@@ -429,10 +401,7 @@ async def check_sub_callback(callback: CallbackQuery):
         )
 
 
-# =========================
 # MOVIE CODE
-# =========================
-
 @dp.message(F.text)
 async def movie_by_code(message: Message):
     if not await require_subscription(message, message.from_user.id):
@@ -446,10 +415,7 @@ async def movie_by_code(message: Message):
         await message.answer("🔢 Iltimos, kino kodini yuboring.")
 
 
-# =========================
 # RUN BOT
-# =========================
-
 async def main():
     print("🎬 @ujaskinotarjima bot ishga tushdi!")
     await bot.delete_webhook(drop_pending_updates=True)
@@ -458,3 +424,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
