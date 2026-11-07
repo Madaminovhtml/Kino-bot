@@ -1,5 +1,4 @@
 
-
 import asyncio
 import sqlite3
 import os
@@ -49,23 +48,36 @@ CREATE TABLE IF NOT EXISTS movies (
     code TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT,
-    file_id TEXT NOT NULL
+    file_id TEXT NOT NULL,
+    image_id TEXT
 )
 """)
+
+# Eski bazani avtomatik yangilash
+columns = [
+    row[1] for row in db.execute("PRAGMA table_info(movies)").fetchall()
+]
+
+if "image_id" not in columns:
+    db.execute("ALTER TABLE movies ADD COLUMN image_id TEXT")
+
 db.commit()
 
 
 def get_movie(code):
     return db.execute(
-        "SELECT code, title, description, file_id FROM movies WHERE code=?",
+        "SELECT code, title, description, file_id, image_id "
+        "FROM movies WHERE code=?",
         (code,)
     ).fetchone()
 
 
-def save_movie(code, title, description, file_id):
+def save_movie(code, title, description, file_id, image_id):
     db.execute(
-        "INSERT INTO movies VALUES (?, ?, ?, ?)",
-        (code, title, description, file_id)
+        """INSERT INTO movies
+        (code, title, description, file_id, image_id)
+        VALUES (?, ?, ?, ?, ?)""",
+        (code, title, description, file_id, image_id)
     )
     db.commit()
 
@@ -183,6 +195,7 @@ async def admin_panel(message: Message):
 # FSM
 class AddMovie(StatesGroup):
     video = State()
+    image = State()
     title = State()
     description = State()
     code = State()
@@ -192,6 +205,7 @@ class DeleteMovie(StatesGroup):
     code = State()
 
 
+# ADD MOVIE
 @dp.callback_query(F.data == "add_movie")
 async def add_movie_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -206,15 +220,33 @@ async def add_movie_start(callback: CallbackQuery, state: FSMContext):
 @dp.message(AddMovie.video, F.video)
 async def get_movie_video(message: Message, state: FSMContext):
     await state.update_data(file_id=message.video.file_id)
-    await state.set_state(AddMovie.title)
-    await message.answer("📝 Kino nomini yuboring:")
+
+    await state.set_state(AddMovie.image)
+    await message.answer("🖼 Endi kinoning rasmini yuboring:")
 
 
 @dp.message(AddMovie.video)
 async def wrong_video(message: Message):
-    await message.answer("Iltimos, video yuboring.")
+    await message.answer("Iltimos, kino videosini yuboring.")
 
 
+# MOVIE IMAGE
+@dp.message(AddMovie.image, F.photo)
+async def get_movie_image(message: Message, state: FSMContext):
+    image_id = message.photo[-1].file_id
+
+    await state.update_data(image_id=image_id)
+    await state.set_state(AddMovie.title)
+
+    await message.answer("📝 Kino nomini yuboring:")
+
+
+@dp.message(AddMovie.image)
+async def wrong_image(message: Message):
+    await message.answer("Iltimos, kino rasmini (photo) yuboring.")
+
+
+# MOVIE TITLE
 @dp.message(AddMovie.title)
 async def get_movie_title(message: Message, state: FSMContext):
     title = (message.text or "").strip()
@@ -225,9 +257,11 @@ async def get_movie_title(message: Message, state: FSMContext):
 
     await state.update_data(title=title)
     await state.set_state(AddMovie.description)
+
     await message.answer("📄 Kino haqida ma'lumot yuboring:")
 
 
+# DESCRIPTION
 @dp.message(AddMovie.description)
 async def get_movie_description(message: Message, state: FSMContext):
     description = (message.text or "").strip()
@@ -235,10 +269,12 @@ async def get_movie_description(message: Message, state: FSMContext):
     await state.update_data(
         description=description or "Ma'lumot mavjud emas."
     )
+
     await state.set_state(AddMovie.code)
     await message.answer("🔢 Kino kodini kiriting:")
 
 
+# MOVIE CODE AND CHANNEL POST
 @dp.message(AddMovie.code)
 async def get_movie_code(message: Message, state: FSMContext):
     code = (message.text or "").strip()
@@ -257,7 +293,7 @@ async def get_movie_code(message: Message, state: FSMContext):
         me = await bot.get_me()
         watch_url = f"https://t.me/{me.username}?start=m_{code}"
 
-        post_text = (
+        post_caption = (
             f"🎬 <b>{html.escape(data['title'])}</b>\n\n"
             f"{html.escape(data['description'])}\n\n"
             f"🔢 Kino kodi: <code>{code}</code>\n\n"
@@ -271,29 +307,36 @@ async def get_movie_code(message: Message, state: FSMContext):
             )]
         ])
 
-        await bot.send_message(
+        # CHANNELGA RASM + MATN + TUGMA
+        await bot.send_photo(
             chat_id=POST_CHANNEL,
-            text=post_text,
+            photo=data["image_id"],
+            caption=post_caption,
             reply_markup=keyboard
         )
 
+        # DATABASEGA SAQLASH
         save_movie(
             code,
             data["title"],
             data["description"],
-            data["file_id"]
+            data["file_id"],
+            data["image_id"]
         )
 
         await message.answer(
-            f"✅ Kino saqlandi va kanalga joylandi!\n\n"
+            f"✅ Kino saqlandi va kanalga rasm bilan joylandi!\n\n"
             f"🎬 Nomi: {html.escape(data['title'])}\n"
             f"🔢 Kodi: <code>{code}</code>"
         )
 
     except Exception as error:
         print("Movie error:", error)
+
         await message.answer(
-            "❌ Xatolik! Botning kanal adminligini tekshiring."
+            "❌ Xatolik yuz berdi!\n\n"
+            "Bot kanal admini ekanini va kanalga post joylash "
+            "huquqi borligini tekshiring."
         )
 
     await state.clear()
@@ -337,6 +380,7 @@ async def movie_stats(callback: CallbackQuery):
     await callback.message.answer(
         f"📊 Bazadagi kinolar soni: <b>{count}</b>"
     )
+
     await callback.answer()
 
 
@@ -348,7 +392,7 @@ async def send_movie(target, code):
         await target.answer("❌ Bunday kino kodi topilmadi.")
         return
 
-    _, title, description, file_id = movie
+    _, title, description, file_id, image_id = movie
 
     caption = (
         f"🎬 <b>{html.escape(title)}</b>\n\n"
@@ -393,6 +437,7 @@ async def check_sub_callback(callback: CallbackQuery):
             "✅ Obuna tasdiqlandi!\n\n"
             "🎬 Endi kino kodini yuborishingiz mumkin."
         )
+
         await callback.answer("Obuna tasdiqlandi!")
     else:
         await callback.answer(
@@ -418,6 +463,7 @@ async def movie_by_code(message: Message):
 # RUN BOT
 async def main():
     print("🎬 @ujaskinotarjima bot ishga tushdi!")
+
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
