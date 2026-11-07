@@ -3,6 +3,7 @@ import asyncio
 import sqlite3
 import os
 import html
+import time
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
@@ -53,13 +54,23 @@ CREATE TABLE IF NOT EXISTS movies (
 )
 """)
 
-# Eski bazani avtomatik yangilash
 columns = [
-    row[1] for row in db.execute("PRAGMA table_info(movies)").fetchall()
+    row[1] for row in db.execute(
+        "PRAGMA table_info(movies)"
+    ).fetchall()
 ]
 
 if "image_id" not in columns:
     db.execute("ALTER TABLE movies ADD COLUMN image_id TEXT")
+
+
+# JOIN REQUEST DATABASE
+db.execute("""
+CREATE TABLE IF NOT EXISTS join_requests (
+    user_id INTEGER PRIMARY KEY,
+    requested_at INTEGER NOT NULL
+)
+""")
 
 db.commit()
 
@@ -91,34 +102,105 @@ def delete_movie(code):
     return cursor.rowcount > 0
 
 
-# SUBSCRIPTION
+# SUBSCRIPTION CHECK
 async def check_subscription(user_id):
-    channels = []
 
+    # 1-KANAL: PRIVATE CHANNEL
     if PRIVATE_CHANNEL_ID is not None:
-        channels.append(PRIVATE_CHANNEL_ID)
-
-    channels.append(PUBLIC_CHANNEL)
-
-    for channel in channels:
         try:
             member = await bot.get_chat_member(
-                chat_id=channel,
+                chat_id=PRIVATE_CHANNEL_ID,
                 user_id=user_id
             )
 
             if member.status not in (
                 "member", "administrator", "creator"
             ):
-                return False
+
+                # JOIN REQUEST TEKSHIRISH
+                request = db.execute(
+                    """
+                    SELECT user_id
+                    FROM join_requests
+                    WHERE user_id=?
+                    AND requested_at > ?
+                    """,
+                    (user_id, int(time.time()) - 86400)
+                ).fetchone()
+
+                if not request:
+                    return False
 
         except Exception as error:
-            print("Subscription error:", error)
+            print("Private channel error:", error)
             return False
+
+    # 2-KANAL: PUBLIC CHANNEL
+    try:
+        member = await bot.get_chat_member(
+            chat_id=PUBLIC_CHANNEL,
+            user_id=user_id
+        )
+
+        if member.status not in (
+            "member", "administrator", "creator"
+        ):
+            return False
+
+    except Exception as error:
+        print("Public channel error:", error)
+        return False
 
     return True
 
 
+# PRIVATE CHANNEL JOIN REQUEST
+@dp.chat_join_request()
+async def handle_join_request(event):
+
+    if event.chat.id != PRIVATE_CHANNEL_ID:
+        return
+
+    user_id = event.from_user.id
+
+    db.execute(
+        """
+        INSERT OR REPLACE INTO join_requests
+        (user_id, requested_at)
+        VALUES (?, ?)
+        """,
+        (user_id, int(time.time()))
+    )
+
+    db.commit()
+
+    print(f"JOIN REQUEST SAQLANDI: {user_id}")
+
+
+# PRIVATE CHANNEL MEMBER STATUS
+@dp.chat_member()
+async def handle_chat_member(event):
+
+    if event.chat.id != PRIVATE_CHANNEL_ID:
+        return
+
+    user_id = event.new_chat_member.user.id
+    new_status = event.new_chat_member.status
+
+    # Tasdiqlangan yoki kanaldan chiqarilgan bo'lsa,
+    # eski request yozuvini o'chiramiz.
+    if new_status in (
+        "member", "administrator", "creator",
+        "left", "kicked"
+    ):
+        db.execute(
+            "DELETE FROM join_requests WHERE user_id=?",
+            (user_id,)
+        )
+        db.commit()
+
+
+# SUBSCRIPTION KEYBOARD
 def subscription_keyboard():
     buttons = []
 
@@ -148,14 +230,18 @@ def subscription_keyboard():
 
 
 async def require_subscription(message, user_id):
+
     if await check_subscription(user_id):
         return True
 
     await message.answer(
         "🎬 Kinolarni ko‘rish uchun ikkala kanalga ham obuna bo‘ling!\n\n"
-        "Obuna bo‘lgach, tekshirish tugmasini bosing.",
+        "1-kanalga obuna so‘rovini yuboring.\n"
+        "2-kanalga obuna bo‘ling.\n\n"
+        "So‘ng tekshirish tugmasini bosing.",
         reply_markup=subscription_keyboard()
     )
+
     return False
 
 
@@ -183,6 +269,7 @@ def admin_keyboard():
 
 @dp.message(Command("admin"))
 async def admin_panel(message: Message):
+
     if not is_admin(message.from_user.id):
         return
 
@@ -207,48 +294,82 @@ class DeleteMovie(StatesGroup):
 
 # ADD MOVIE
 @dp.callback_query(F.data == "add_movie")
-async def add_movie_start(callback: CallbackQuery, state: FSMContext):
+async def add_movie_start(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
     if not is_admin(callback.from_user.id):
         await callback.answer("Ruxsat yo‘q!", show_alert=True)
         return
 
     await state.set_state(AddMovie.video)
-    await callback.message.answer("🎥 Kinoning videosini yuboring:")
+
+    await callback.message.answer(
+        "🎥 Kinoning videosini yuboring:"
+    )
+
     await callback.answer()
 
 
 @dp.message(AddMovie.video, F.video)
-async def get_movie_video(message: Message, state: FSMContext):
-    await state.update_data(file_id=message.video.file_id)
+async def get_movie_video(
+    message: Message,
+    state: FSMContext
+):
+
+    await state.update_data(
+        file_id=message.video.file_id
+    )
 
     await state.set_state(AddMovie.image)
-    await message.answer("🖼 Endi kinoning rasmini yuboring:")
+
+    await message.answer(
+        "🖼 Endi kinoning rasmini yuboring:"
+    )
 
 
 @dp.message(AddMovie.video)
 async def wrong_video(message: Message):
-    await message.answer("Iltimos, kino videosini yuboring.")
+    await message.answer(
+        "Iltimos, kino videosini yuboring."
+    )
 
 
 # MOVIE IMAGE
 @dp.message(AddMovie.image, F.photo)
-async def get_movie_image(message: Message, state: FSMContext):
+async def get_movie_image(
+    message: Message,
+    state: FSMContext
+):
+
     image_id = message.photo[-1].file_id
 
-    await state.update_data(image_id=image_id)
+    await state.update_data(
+        image_id=image_id
+    )
+
     await state.set_state(AddMovie.title)
 
-    await message.answer("📝 Kino nomini yuboring:")
+    await message.answer(
+        "📝 Kino nomini yuboring:"
+    )
 
 
 @dp.message(AddMovie.image)
 async def wrong_image(message: Message):
-    await message.answer("Iltimos, kino rasmini (photo) yuboring.")
+    await message.answer(
+        "Iltimos, kino rasmini (photo) yuboring."
+    )
 
 
 # MOVIE TITLE
 @dp.message(AddMovie.title)
-async def get_movie_title(message: Message, state: FSMContext):
+async def get_movie_title(
+    message: Message,
+    state: FSMContext
+):
+
     title = (message.text or "").strip()
 
     if not title:
@@ -256,14 +377,21 @@ async def get_movie_title(message: Message, state: FSMContext):
         return
 
     await state.update_data(title=title)
+
     await state.set_state(AddMovie.description)
 
-    await message.answer("📄 Kino haqida ma'lumot yuboring:")
+    await message.answer(
+        "📄 Kino haqida ma'lumot yuboring:"
+    )
 
 
 # DESCRIPTION
 @dp.message(AddMovie.description)
-async def get_movie_description(message: Message, state: FSMContext):
+async def get_movie_description(
+    message: Message,
+    state: FSMContext
+):
+
     description = (message.text or "").strip()
 
     await state.update_data(
@@ -271,27 +399,41 @@ async def get_movie_description(message: Message, state: FSMContext):
     )
 
     await state.set_state(AddMovie.code)
-    await message.answer("🔢 Kino kodini kiriting:")
+
+    await message.answer(
+        "🔢 Kino kodini kiriting:"
+    )
 
 
 # MOVIE CODE AND CHANNEL POST
 @dp.message(AddMovie.code)
-async def get_movie_code(message: Message, state: FSMContext):
+async def get_movie_code(
+    message: Message,
+    state: FSMContext
+):
+
     code = (message.text or "").strip()
 
     if not code.isdigit():
-        await message.answer("Kod faqat raqamlardan iborat bo‘lsin.")
+        await message.answer(
+            "Kod faqat raqamlardan iborat bo‘lsin."
+        )
         return
 
     if get_movie(code):
-        await message.answer("Bu kod mavjud. Boshqa kod kiriting.")
+        await message.answer(
+            "Bu kod mavjud. Boshqa kod kiriting."
+        )
         return
 
     data = await state.get_data()
 
     try:
         me = await bot.get_me()
-        watch_url = f"https://t.me/{me.username}?start=m_{code}"
+
+        watch_url = (
+            f"https://t.me/{me.username}?start=m_{code}"
+        )
 
         post_caption = (
             f"🎬 <b>{html.escape(data['title'])}</b>\n\n"
@@ -300,14 +442,15 @@ async def get_movie_code(message: Message, state: FSMContext):
             f"🍿 Kinoni ko‘rish uchun tugmani bosing!"
         )
 
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="🎬 KINONI KO‘RISH",
-                url=watch_url
-            )]
-        ])
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="🎬 KINONI KO‘RISH",
+                    url=watch_url
+                )]
+            ]
+        )
 
-        # CHANNELGA RASM + MATN + TUGMA
         await bot.send_photo(
             chat_id=POST_CHANNEL,
             photo=data["image_id"],
@@ -315,7 +458,6 @@ async def get_movie_code(message: Message, state: FSMContext):
             reply_markup=keyboard
         )
 
-        # DATABASEGA SAQLASH
         save_movie(
             code,
             data["title"],
@@ -344,18 +486,33 @@ async def get_movie_code(message: Message, state: FSMContext):
 
 # DELETE MOVIE
 @dp.callback_query(F.data == "delete_movie")
-async def delete_movie_start(callback: CallbackQuery, state: FSMContext):
+async def delete_movie_start(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
     if not is_admin(callback.from_user.id):
-        await callback.answer("Ruxsat yo‘q!", show_alert=True)
+        await callback.answer(
+            "Ruxsat yo‘q!",
+            show_alert=True
+        )
         return
 
     await state.set_state(DeleteMovie.code)
-    await callback.message.answer("O‘chiriladigan kino kodini yuboring:")
+
+    await callback.message.answer(
+        "O‘chiriladigan kino kodini yuboring:"
+    )
+
     await callback.answer()
 
 
 @dp.message(DeleteMovie.code)
-async def delete_movie_finish(message: Message, state: FSMContext):
+async def delete_movie_finish(
+    message: Message,
+    state: FSMContext
+):
+
     code = (message.text or "").strip()
 
     if delete_movie(code):
@@ -369,8 +526,12 @@ async def delete_movie_finish(message: Message, state: FSMContext):
 # STATISTICS
 @dp.callback_query(F.data == "movie_stats")
 async def movie_stats(callback: CallbackQuery):
+
     if not is_admin(callback.from_user.id):
-        await callback.answer("Ruxsat yo‘q!", show_alert=True)
+        await callback.answer(
+            "Ruxsat yo‘q!",
+            show_alert=True
+        )
         return
 
     count = db.execute(
@@ -386,10 +547,13 @@ async def movie_stats(callback: CallbackQuery):
 
 # SEND MOVIE
 async def send_movie(target, code):
+
     movie = get_movie(code)
 
     if not movie:
-        await target.answer("❌ Bunday kino kodi topilmadi.")
+        await target.answer(
+            "❌ Bunday kino kodi topilmadi."
+        )
         return
 
     _, title, description, file_id, image_id = movie
@@ -408,10 +572,17 @@ async def send_movie(target, code):
 
 # START
 @dp.message(CommandStart())
-async def start(message: Message, state: FSMContext):
+async def start(
+    message: Message,
+    state: FSMContext
+):
+
     await state.clear()
 
-    if not await require_subscription(message, message.from_user.id):
+    if not await require_subscription(
+        message,
+        message.from_user.id
+    ):
         return
 
     args = message.text.split(maxsplit=1)
@@ -423,7 +594,8 @@ async def start(message: Message, state: FSMContext):
 
     await message.answer(
         "🎬 <b>KINO BOTGA XUSH KELIBSIZ!</b>\n\n"
-        "Bu bot orqali sevimli kinolaringizni tomosha qilishingiz mumkin.\n\n"
+        "Bu bot orqali sevimli kinolaringizni tomosha "
+        "qilishingiz mumkin.\n\n"
         "🔢 Kinoni ko‘rish uchun uning kodini yuboring.\n\n"
         "🍿 Yoqimli tomosha!"
     )
@@ -431,14 +603,21 @@ async def start(message: Message, state: FSMContext):
 
 # CHECK SUBSCRIPTION
 @dp.callback_query(F.data == "check_sub")
-async def check_sub_callback(callback: CallbackQuery):
+async def check_sub_callback(
+    callback: CallbackQuery
+):
+
     if await check_subscription(callback.from_user.id):
+
         await callback.message.edit_text(
             "✅ Obuna tasdiqlandi!\n\n"
             "🎬 Endi kino kodini yuborishingiz mumkin."
         )
 
-        await callback.answer("Obuna tasdiqlandi!")
+        await callback.answer(
+            "Obuna tasdiqlandi!"
+        )
+
     else:
         await callback.answer(
             "Ikkala kanalga ham obuna bo‘ling!",
@@ -449,7 +628,11 @@ async def check_sub_callback(callback: CallbackQuery):
 # MOVIE CODE
 @dp.message(F.text)
 async def movie_by_code(message: Message):
-    if not await require_subscription(message, message.from_user.id):
+
+    if not await require_subscription(
+        message,
+        message.from_user.id
+    ):
         return
 
     code = message.text.strip()
@@ -457,15 +640,24 @@ async def movie_by_code(message: Message):
     if code.isdigit():
         await send_movie(message, code)
     else:
-        await message.answer("🔢 Iltimos, kino kodini yuboring.")
+        await message.answer(
+            "🔢 Iltimos, kino kodini yuboring."
+        )
 
 
 # RUN BOT
 async def main():
+
     print("🎬 @ujaskinotarjima bot ishga tushdi!")
 
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    await bot.delete_webhook(
+        drop_pending_updates=True
+    )
+
+    await dp.start_polling(
+        bot,
+        allowed_updates=dp.resolve_used_update_types()
+    )
 
 
 if __name__ == "__main__":
